@@ -5,6 +5,7 @@ alamat diverifikasi dan koneksi dibuat ke alamat itu, bukan ke hasil resolve ula
 Modul lain tidak boleh mengimpor httpx sendiri (dijaga oleh test).
 """
 
+import ssl
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -58,6 +59,25 @@ def _pinned_url(target: Target, address: str) -> str:
     query = f"?{parts.query}" if parts.query else ""
     ip = _bracket(address.split("%", 1)[0])
     return f"{target.scheme}://{ip}:{target.port}{path}{query}"
+
+
+def describe_error(error: BaseException) -> str:
+    """Ringkas penyebab galat jaringan tanpa membocorkan pesan aslinya (yang bisa memuat
+    URL, alamat internal, atau data lain)."""
+    current: BaseException | None = error
+    for _ in range(10):  # batas, supaya rantai sebab yang melingkar tidak menggantung
+        if current is None:
+            break
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return "sertifikat TLS tidak valid"
+        if isinstance(current, ssl.SSLError):
+            return "kegagalan TLS"
+        if isinstance(current, ConnectionRefusedError):
+            return "koneksi ditolak (tidak ada yang mendengarkan di port itu)"
+        if isinstance(current, ConnectionResetError):
+            return "koneksi diputus oleh server"
+        current = current.__cause__ or current.__context__
+    return f"gagal terhubung ({type(error).__name__})"
 
 
 class Fetcher:
@@ -146,7 +166,7 @@ class Fetcher:
         except httpx.TimeoutException:
             raise FetchError("timeout") from None
         except httpx.HTTPError as e:
-            raise FetchError(f"gagal terhubung ({type(e).__name__})") from None
+            raise FetchError(describe_error(e)) from None
         finally:
             self._client.cookies.clear()  # tidak ada sesi yang terbawa antar permintaan
         return response, location
