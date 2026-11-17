@@ -284,3 +284,44 @@ def test_only_the_client_module_imports_httpx():
         if p.name != "client.py" and pattern.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+# ---- header tambahan ----
+
+
+def test_extra_origin_header_is_sent():
+    handler, seen = serve(httpx.Response(200))
+    with make(handler) as f:
+        f.get(URL, headers={"Origin": "https://evil.example"})
+    assert seen[0].headers["origin"] == "https://evil.example"
+    assert "web-scout" in seen[0].headers["user-agent"]
+
+
+@pytest.mark.parametrize("name", ["Host", "User-Agent", "Cookie", "Authorization", "X-Custom"])
+def test_disallowed_extra_headers_are_rejected_before_any_request(name):
+    handler, seen = serve(httpx.Response(200))
+    with make(handler) as f, pytest.raises(FetchError, match="tidak diizinkan"):
+        f.get(URL, headers={name: "x"})
+    assert seen == []
+
+
+@pytest.mark.parametrize("value", ["", "a\r\nX-Evil: 1", "a\nb", "é", "a\x00b"])
+def test_invalid_extra_header_values_are_rejected(value):
+    handler, seen = serve(httpx.Response(200))
+    with make(handler) as f, pytest.raises(FetchError, match="tidak sah"):
+        f.get(URL, headers={"Origin": value})
+    assert seen == []
+
+
+def test_extra_accept_replaces_the_default_instead_of_duplicating():
+    handler, seen = serve(httpx.Response(200))
+    with make(handler) as f:
+        f.get(URL, headers={"accept": "text/html"})
+    assert seen[0].headers.get_list("accept") == ["text/html"]
+
+
+def test_extra_headers_are_sent_on_every_redirect_hop():
+    handler, seen = serve(redirect("/b"), httpx.Response(200))
+    with make(handler) as f:
+        f.get(URL, headers={"Origin": "null"})
+    assert [r.headers["origin"] for r in seen] == ["null", "null"]

@@ -170,3 +170,63 @@ def test_version_flag(capsys):
         main(["--version"])
     assert info.value.code == 0
     assert "web-scout" in capsys.readouterr().out
+
+
+# ---- cors ----
+
+
+def reflecting_handler(request):
+    origin = request.headers.get("origin")
+    headers = [("content-type", "text/html")]
+    if origin:
+        headers += [
+            ("access-control-allow-origin", origin),
+            ("access-control-allow-credentials", "true"),
+            ("vary", "Origin"),
+        ]
+    return httpx.Response(200, headers=headers)
+
+
+def test_cors_reflected_origin_exits_one_and_shows_high_severity(capsys):
+    code = main(["cors", "http://127.0.0.1:3000/"], make_fetcher=factory(reflecting_handler))
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "[TINGGI]" in out
+    assert "Permintaan uji:" in out
+    assert "preflight" in out
+
+
+def test_cors_server_without_cors_exits_zero(capsys):
+    code = main(["cors", "http://127.0.0.1:3000/"], make_fetcher=factory(reply(BARE)))
+    assert code == 0
+    assert "Tidak ada temuan CORS" in capsys.readouterr().out
+
+
+def test_cors_json_output_is_pure_json(capsys):
+    code = main(
+        ["cors", "--json", "http://127.0.0.1:3000/"], make_fetcher=factory(reflecting_handler)
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert [r["label"] for r in data["requests"]] == ["baseline", "asing", "null"]
+    assert any(f["id"] == "cors-reflect-credentials" for f in data["findings"])
+    assert captured.err == ""
+
+
+def test_cors_out_of_scope_exits_two_without_a_request(capsys):
+    seen = []
+    code = main(["cors", "http://evil.example/"], make_fetcher=factory(reply(GOOD, seen=seen)))
+    assert code == 2
+    assert seen == []
+    assert capsys.readouterr().err.startswith("web-scout:")
+
+
+def test_cors_terminal_output_never_contains_control_characters(capsys):
+    def handler(request):
+        return httpx.Response(200, headers={"access-control-allow-origin": "*\x07\x1b[31m"})
+
+    main(["cors", "http://127.0.0.1:3000/"], make_fetcher=factory(handler))
+    out = capsys.readouterr().out
+    assert "\x07" not in out
+    assert "\x1b" not in out

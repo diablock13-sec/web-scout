@@ -7,7 +7,7 @@ Modul lain tidak boleh mengimpor httpx sendiri (dijaga oleh test).
 
 import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 from urllib.parse import urljoin, urlsplit
@@ -80,6 +80,23 @@ def describe_error(error: BaseException) -> str:
     return f"gagal terhubung ({type(error).__name__})"
 
 
+ALLOWED_EXTRA_HEADERS = {"origin": "Origin", "referer": "Referer", "accept": "Accept"}
+
+
+def _extra_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Header tambahan dari pemanggil. Hanya yang diizinkan, dan nilainya harus ASCII
+    tercetak (tanpa CR atau LF). Host dan User-Agent tidak bisa diganti."""
+    clean: dict[str, str] = {}
+    for name, value in (headers or {}).items():
+        canonical = ALLOWED_EXTRA_HEADERS.get(name.lower())
+        if canonical is None:
+            raise FetchError(f"header {name!r} tidak diizinkan")
+        if not value or not all(32 <= ord(ch) <= 126 for ch in value):
+            raise FetchError(f"nilai header {name!r} tidak sah")
+        clean[canonical] = value
+    return clean
+
+
 class Fetcher:
     def __init__(
         self,
@@ -113,9 +130,16 @@ class Fetcher:
     def close(self) -> None:
         self._client.close()
 
-    def get(self, raw_url: str, *, max_body: int = 0) -> Response:
+    def get(
+        self,
+        raw_url: str,
+        *,
+        max_body: int = 0,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
         """GET dengan pagar lingkup. Target awal di luar lingkup melempar ScopeError;
         redirect ke luar lingkup melempar FetchError dan tidak diikuti."""
+        extra = _extra_headers(headers)
         history: list[str] = []
         url = raw_url
         for _ in range(MAX_REDIRECTS + 1):
@@ -126,7 +150,7 @@ class Fetcher:
                 if not history:
                     raise
                 raise FetchError(f"redirect ke luar lingkup tidak diikuti: {e}") from None
-            response, location = self._send(target, addresses[0], max_body)
+            response, location = self._send(target, addresses[0], max_body, extra)
             if response.status not in REDIRECT_STATUSES or not location:
                 return replace(response, history=tuple(history))
             history.append(target.url)
@@ -141,7 +165,7 @@ class Fetcher:
         self._last = self._clock()
 
     def _send(
-        self, target: Target, address: str, max_body: int
+        self, target: Target, address: str, max_body: int, extra: dict[str, str]
     ) -> tuple[Response, str | None]:
         self._wait()
         extensions = {"sni_hostname": target.host} if target.scheme == "https" else {}
@@ -150,6 +174,7 @@ class Fetcher:
             "User-Agent": USER_AGENT,
             "Accept": "*/*",
         }
+        headers.update(extra)
         try:
             with self._client.stream(
                 "GET", _pinned_url(target, address), headers=headers, extensions=extensions
