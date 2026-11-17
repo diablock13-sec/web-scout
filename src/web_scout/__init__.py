@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from web-scout!")
+from web_scout.cli import main
+
+__all__ = ["main"]
