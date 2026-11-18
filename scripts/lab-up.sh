@@ -1,6 +1,6 @@
 #!/bin/sh
 # Nyalakan lab Juice Shop hanya di loopback, lalu buktikan port tidak terbuka ke jaringan.
-# Kalau pembuktian gagal, kontainer dihentikan.
+# Kalau pembuktian gagal, kontainer dihentikan..
 set -eu
 
 NAME=juice-shop
