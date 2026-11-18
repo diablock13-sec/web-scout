@@ -230,3 +230,58 @@ def test_cors_terminal_output_never_contains_control_characters(capsys):
     out = capsys.readouterr().out
     assert "\x07" not in out
     assert "\x1b" not in out
+
+
+# ---- cookies ----
+
+
+def cookie_reply(*cookies):
+    headers = [("content-type", "text/html"), *[("set-cookie", c) for c in cookies]]
+    return reply(headers)
+
+
+def test_cookies_findings_exit_one_and_value_is_never_printed(capsys):
+    handler = cookie_reply("sessionid=TOPSECRETVALUE; Path=/")
+    code = main(["cookies", "http://127.0.0.1:3000/"], make_fetcher=factory(handler))
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "cookie 'sessionid'" in out
+    assert "[SEDANG] Cookie tanpa HttpOnly" in out
+    assert "TOPSECRETVALUE" not in out
+    assert "nilai cookie tidak pernah ditampilkan" in out
+
+
+def test_cookies_clean_exits_zero(capsys):
+    handler = cookie_reply("session=1; Secure; HttpOnly; SameSite=Lax; Path=/")
+    code = main(["cookies", "https://127.0.0.1:3000/"], make_fetcher=factory(handler))
+    assert code == 0
+    assert "Tidak ada temuan pada cookie" in capsys.readouterr().out
+
+
+def test_cookies_none_set_exits_zero_and_says_so(capsys):
+    code = main(["cookies", "http://127.0.0.1:3000/"], make_fetcher=factory(reply(BARE)))
+    assert code == 0
+    assert "tidak ada Set-Cookie" in capsys.readouterr().out
+
+
+def test_cookies_json_is_pure_and_has_no_value(capsys):
+    handler = cookie_reply("sessionid=TOPSECRETVALUE")
+    code = main(["cookies", "--json", "http://127.0.0.1:3000/"], make_fetcher=factory(handler))
+    assert code == 1
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["cookies_seen"] == 1
+    assert {f["id"] for f in data["findings"]} >= {"cookie-no-httponly"}
+    assert "TOPSECRETVALUE" not in captured.out
+    assert captured.err == ""
+
+
+def test_cookies_out_of_scope_exits_two_without_a_request(capsys):
+    seen = []
+    code = main(
+        ["cookies", "http://evil.example/"],
+        make_fetcher=factory(reply(GOOD, seen=seen)),
+    )
+    assert code == 2
+    assert seen == []
+    assert capsys.readouterr().err.startswith("web-scout:")

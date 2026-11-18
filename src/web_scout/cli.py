@@ -8,6 +8,7 @@ from dataclasses import asdict
 from importlib import metadata
 
 from web_scout.client import Fetcher, FetchError, Response
+from web_scout.cookies import CookieReport, check_cookies
 from web_scout.cors import CorsReport, run_probes
 from web_scout.headers import Finding, HeaderReport, check_headers
 from web_scout.scope import Scope, ScopeError, build_scope
@@ -111,6 +112,34 @@ def format_cors_json(report: CorsReport) -> str:
     )
 
 
+def format_cookies_text(response: Response, report: CookieReport) -> str:
+    lines = [
+        f"Target  : {response.url}  (status {response.status})",
+        f"Cookie  : {report.cookies_seen} header Set-Cookie dibaca",
+    ]
+    if response.history:
+        lines.append("Redirect: " + " -> ".join([*response.history, response.url]))
+    lines += _finding_lines(report.findings, "Tidak ada temuan pada cookie yang diperiksa.")
+    lines += _skipped_lines(report.skipped)
+    lines += ["", "Catatan: nilai cookie tidak pernah ditampilkan, hanya nama dan atribut."]
+    return "\n".join(lines)
+
+
+def format_cookies_json(response: Response, report: CookieReport) -> str:
+    return json.dumps(
+        {
+            "url": response.url,
+            "status": response.status,
+            "redirects": list(response.history),
+            "cookies_seen": report.cookies_seen,
+            "findings": [asdict(f) for f in report.findings],
+            "skipped": report.skipped,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def cmd_headers(
     url: str,
     *,
@@ -152,6 +181,31 @@ def cmd_cors(
     return EXIT_FINDINGS if report.findings else EXIT_OK
 
 
+def cmd_cookies(
+    url: str,
+    *,
+    allow: list[str],
+    i_own_this: bool,
+    as_json: bool,
+    make_fetcher: FetcherFactory,
+) -> int:
+    try:
+        scope = build_scope(allow, i_own_this=i_own_this)
+        with make_fetcher(scope) as fetcher:
+            response = fetcher.get(url)
+    except (ScopeError, FetchError) as e:
+        print(f"web-scout: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+    report = check_cookies(response)
+    print(
+        format_cookies_json(response, report)
+        if as_json
+        else format_cookies_text(response, report)
+    )
+    return EXIT_FINDINGS if report.findings else EXIT_OK
+
+
 def _target_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("url", help="contoh: http://127.0.0.1:3000/")
     parser.add_argument(
@@ -184,12 +238,15 @@ def build_parser() -> argparse.ArgumentParser:
     _target_options(
         sub.add_parser("cors", help="periksa konfigurasi CORS (mengirim 4 permintaan GET)")
     )
+    _target_options(
+        sub.add_parser("cookies", help="periksa flag cookie (Secure, HttpOnly, SameSite)")
+    )
     return parser
 
 
 def main(argv: list[str] | None = None, *, make_fetcher: FetcherFactory = Fetcher) -> int:
     args = build_parser().parse_args(argv)
-    run = cmd_headers if args.command == "headers" else cmd_cors
+    run = {"headers": cmd_headers, "cors": cmd_cors, "cookies": cmd_cookies}[args.command]
     return run(
         args.url,
         allow=args.allow or [],
