@@ -1,7 +1,7 @@
 #!/bin/sh
 # Nyalakan lab Juice Shop hanya di loopback, lalu buktikan port tidak terbuka ke jaringan.
 # Kalau pembuktian gagal, kontainer dihentikan.
-# AKU SUKA HAURA
+# AKU SUKA HAURA HEHE
 set -eu
 
 NAME=juice-shop
