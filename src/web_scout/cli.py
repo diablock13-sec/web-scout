@@ -1,4 +1,5 @@
-"""Antarmuka baris perintah web-scout. Semua akses jaringan lewat Fetcher (pagar lingkup)."""
+"""Antarmuka baris perintah web-scout. Akses HTTP lewat Fetcher; pemindai port lewat
+check_target dan check_connectable (hanya loopback)."""
 
 import argparse
 import json
@@ -11,7 +12,23 @@ from web_scout.client import Fetcher, FetchError, Response
 from web_scout.cookies import CookieReport, check_cookies
 from web_scout.cors import CorsReport, run_probes
 from web_scout.headers import Finding, HeaderReport, check_headers
-from web_scout.scope import Scope, ScopeError, build_scope
+from web_scout.ports import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_PORTS,
+    DEFAULT_TIMEOUT,
+    MAX_CONCURRENCY,
+    PortReport,
+    PortSpecError,
+    parse_ports,
+    run_scan,
+)
+from web_scout.scope import (
+    Scope,
+    ScopeError,
+    build_scope,
+    check_connectable,
+    check_target,
+)
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -206,6 +223,59 @@ def cmd_cookies(
     return EXIT_FINDINGS if report.findings else EXIT_OK
 
 
+def format_ports_text(report: PortReport) -> str:
+    states = [r.state for r in report.results]
+    summary = ", ".join(f"{states.count(s)} {s}" for s in ("open", "closed", "filtered", "error"))
+    lines = [
+        f"Target  : {_safe(report.host)}  (alamat {_safe(report.address)})",
+        f"Dipindai: {len(report.results)} port ({summary})",
+    ]
+    opened = [r for r in report.results if r.state == "open"]
+    if opened:
+        lines += ["", "Port terbuka:"]
+        for r in opened:
+            banner = f"  {_safe(r.banner)}" if r.banner else ""
+            lines.append(f"  {r.port:>5}/tcp{banner}")
+    else:
+        lines += ["", "Tidak ada port terbuka pada port yang dipindai."]
+    if "error" in states:
+        lines += ["", f"{states.count('error')} port gagal diperiksa (galat jaringan, detail tidak ditampilkan)."]
+    lines += _skipped_lines(report.skipped)
+    lines += ["", "Catatan: port terbuka adalah informasi, bukan temuan; kode keluar 0 kecuali galat."]
+    return "\n".join(lines)
+
+
+def format_ports_json(report: PortReport) -> str:
+    return json.dumps(asdict(report), indent=2)
+
+
+def cmd_ports(
+    url: str,
+    *,
+    ports: str | None,
+    concurrency: int,
+    timeout: float,
+    as_json: bool,
+) -> int:
+    try:
+        target = check_target(url)  # lingkup bawaan: hanya loopback
+        port_list = parse_ports(ports) if ports else sorted({*DEFAULT_PORTS, target.port})
+        addresses = check_connectable(target)
+    except (ScopeError, PortSpecError) as e:
+        print(f"web-scout: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+    report = run_scan(
+        target.host, addresses[0], port_list, concurrency=concurrency, timeout=timeout
+    )
+    if len(addresses) > 1:
+        report.skipped.append(
+            f"{target.host} punya {len(addresses)} alamat; hanya {addresses[0]} yang dipindai"
+        )
+    print(format_ports_json(report) if as_json else format_ports_text(report))
+    return EXIT_OK
+
+
 def _target_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("url", help="contoh: http://127.0.0.1:3000/")
     parser.add_argument(
@@ -241,11 +311,44 @@ def build_parser() -> argparse.ArgumentParser:
     _target_options(
         sub.add_parser("cookies", help="periksa flag cookie (Secure, HttpOnly, SameSite)")
     )
+    ports_parser = sub.add_parser(
+        "ports",
+        help="pindai port TCP (hanya loopback); port terbuka bukan temuan, kode keluar 0 kecuali galat",
+    )
+    ports_parser.add_argument(
+        "url", help="contoh: http://127.0.0.1:3000/ (port dalam URL ikut dipindai)"
+    )
+    ports_parser.add_argument(
+        "--ports",
+        metavar="DAFTAR",
+        help="contoh: 80,443,8000-8010 (bawaan: 21 port umum ditambah port dalam URL)",
+    )
+    ports_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"koneksi bersamaan (bawaan {DEFAULT_CONCURRENCY}, maksimum {MAX_CONCURRENCY})",
+    )
+    ports_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"detik per koneksi (bawaan {DEFAULT_TIMEOUT})",
+    )
+    ports_parser.add_argument("--json", action="store_true", help="keluaran JSON")
     return parser
 
 
 def main(argv: list[str] | None = None, *, make_fetcher: FetcherFactory = Fetcher) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "ports":
+        return cmd_ports(
+            args.url,
+            ports=args.ports,
+            concurrency=args.concurrency,
+            timeout=args.timeout,
+            as_json=args.json,
+        )
     run = {"headers": cmd_headers, "cors": cmd_cors, "cookies": cmd_cookies}[args.command]
     return run(
         args.url,
